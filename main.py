@@ -1,98 +1,107 @@
 import streamlit as st
 import cv2
+import numpy as np
 import time
 import pandas as pd
 import pytesseract
 import easyocr
 from google.cloud import vision
 from PIL import Image
+from io import BytesIO
 
 # Initialize Google Vision client
 client = vision.ImageAnnotatorClient()
 
-# Function for Tesseract OCR
-def ocr_tesseract(image):
-    text = pytesseract.image_to_string(image)
-    return text
+# Set page config
+st.set_page_config(page_title="Library OCR", layout="wide")
 
-# Function for EasyOCR
+# OCR Functions
+def ocr_tesseract(image):
+    return pytesseract.image_to_string(image)
+
 def ocr_easyocr(image):
-    reader = easyocr.Reader(['en'])
-    result = reader.readtext(image)
+    reader = easyocr.Reader(['en'], gpu=False)
+    result = reader.readtext(np.array(image))
     return " ".join([r[1] for r in result])
 
-# Function for Google Vision OCR
-def ocr_googlevision(image):
-    # Convert image to Google Cloud Vision format
-    image_content = image.tobytes()
-    google_image = vision.Image(content=image_content)
-    
-    # Perform text detection
+#def ocr_googlevision(image):
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG")
+    content = buffer.getvalue()
+    google_image = vision.Image(content=content)
     response = client.text_detection(image=google_image)
     texts = response.text_annotations
-    if texts:
-        return texts[0].description
-    return ""
+    return texts[0].description if texts else ""
 
-# Function to detect book positions and check for removal/addition
-def detect_books_and_update_positions(frame):
-    # Placeholder for the logic to detect books
-    books_detected = {"Book1": (1, 2), "Book2": (3, 4)}  # Sample positions
-    return books_detected
+def log_to_csv(book_name, position):
+    df = pd.DataFrame([[book_name, position, time.strftime("%Y-%m-%d %H:%M:%S")]],
+                      columns=["Book Name", "Position", "Timestamp"])
+    df.to_csv("books_positions.csv", mode='a', index=False, header=not pd.io.common.file_exists("books_positions.csv"))
 
-# Streamlit UI setup
-st.title("Library Management with OCR")
+def load_csv_data():
+    try:
+        return pd.read_csv("books_positions.csv")
+    except FileNotFoundError:
+        return pd.DataFrame(columns=["Book Name", "Position", "Timestamp"])
 
-# Timer setup
-time_limit = 5 * 60  # 5 minutes
-elapsed_time = 0
+# Sidebar Navigation
+page = st.sidebar.selectbox("Navigation", ["Home", "View Log", "Insert", "Delete"])
 
-# Capture webcam feed
-cap = cv2.VideoCapture(0)
-
-if cap.isOpened():
-    # Placeholder for image feed
-    stframe = st.empty()
+if page == "Home":
+    st.title("Library Management with OCR")
     
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        # Update the frame
-        stframe.image(frame, channels="BGR", use_column_width=True)
+    col1, col2 = st.columns(2)
 
-        # OCR Processing every 5 seconds
-        if elapsed_time >= time_limit:
-            # Perform OCR with all 3 methods
-            tesseract_text = ocr_tesseract(frame)
-            easyocr_text = ocr_easyocr(frame)
-            googlevision_text = ocr_googlevision(Image.fromarray(frame))
+    with col1:
+        st.header("Camera Feed")
+        img_file_buffer = st.camera_input("Take a picture")
 
-            # Display OCR results
-            st.write("Tesseract OCR Output:", tesseract_text)
-            st.write("EasyOCR Output:", easyocr_text)
-            st.write("Google Vision OCR Output:", googlevision_text)
+    with col2:
+        st.header("OCR Outputs")
+        if img_file_buffer is not None:
+            image = Image.open(img_file_buffer)
+            st.image(image, caption="Captured Image", use_column_width=True)
 
-            # Update the position of books and check for removal
-            books_position = detect_books_and_update_positions(frame)
-            st.write("Books Positions:", books_position)
+            tess_text = ocr_tesseract(image)
+            easy_text = ocr_easyocr(image)
+            #google_text = ocr_googlevision(image)
+
+            st.subheader("1. Tesseract")
+            st.text(tess_text)
             
-            # Log into CSV
-            df = pd.DataFrame(books_position.items(), columns=["Book Name", "Position"])
-            df.to_csv('books_positions.csv', mode='a', header=False)
+            st.subheader("2. EasyOCR")
+            st.text(easy_text)
 
-            # Reset timer
-            elapsed_time = 0
+            st.subheader("3. Google Vision")
+            st.text(google_text)
 
-        # Increase elapsed time
-        elapsed_time += 1
+            # Log Google Vision output into CSV
+            #log_to_csv("Detected Book", google_text)
 
-        # Break out of loop on user exit
-        time.sleep(1)
+elif page == "View Log":
+    st.title("Book Detection Log")
+    data = load_csv_data()
+    st.dataframe(data)
 
-else:
-    st.error("Could not open webcam.")
+elif page == "Insert":
+    st.title("Insert Record Manually")
+    with st.form("insert_form"):
+        book_name = st.text_input("Book Name")
+        position = st.text_input("Position")
+        submitted = st.form_submit_button("Insert")
+        if submitted and book_name and position:
+            log_to_csv(book_name, position)
+            st.success("Record inserted successfully!")
 
-cap.release()
-cv2.destroyAllWindows()
+elif page == "Delete":
+    st.title("Delete Records")
+    data = load_csv_data()
+    if not data.empty:
+        book_names = data["Book Name"].unique()
+        book_to_delete = st.selectbox("Select Book to Delete", book_names)
+        if st.button("Delete"):
+            updated_df = data[data["Book Name"] != book_to_delete]
+            updated_df.to_csv("books_positions.csv", index=False)
+            st.success(f"Records for '{book_to_delete}' deleted.")
+    else:
+        st.info("No records to delete.")

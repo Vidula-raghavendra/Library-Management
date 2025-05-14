@@ -1,4 +1,5 @@
 # Search bar for finding books
+import streamlit as st
 book_search = st.text_input("Search for a book")
 
 if book_search:
