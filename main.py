@@ -1,107 +1,86 @@
 import streamlit as st
 import cv2
-import numpy as np
-import time
-import pandas as pd
-import pytesseract
-import easyocr
-from google.cloud import vision
 from PIL import Image
-from io import BytesIO
+import numpy as np
+import pytesseract
 
-# Initialize Google Vision client
-client = vision.ImageAnnotatorClient()
+# Replace with the actual path where you installed Tesseract
+pytesseract.pytesseract.tesseract_cmd = r'"C:\Users\ragha\Downloads\tesseract-ocr-w64-setup-5.5.0.20241111.exe"'
 
-# Set page config
-st.set_page_config(page_title="Library OCR", layout="wide")
+import easyocr
+import os
+import pandas as pd
+from database import extract_with_gemini
 
-# OCR Functions
-def ocr_tesseract(image):
-    return pytesseract.image_to_string(image)
+# SET TESSERACT PATH (Windows users)
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-def ocr_easyocr(image):
-    reader = easyocr.Reader(['en'], gpu=False)
-    result = reader.readtext(np.array(image))
-    return " ".join([r[1] for r in result])
+st.title("📚 Live Book Spine Text Extractor")
 
-#def ocr_googlevision(image):
-    buffer = BytesIO()
-    image.save(buffer, format="JPEG")
-    content = buffer.getvalue()
-    google_image = vision.Image(content=content)
-    response = client.text_detection(image=google_image)
-    texts = response.text_annotations
-    return texts[0].description if texts else ""
+# Camera Capture
+st.subheader("🎥 Live Camera Feed")
 
-def log_to_csv(book_name, position):
-    df = pd.DataFrame([[book_name, position, time.strftime("%Y-%m-%d %H:%M:%S")]],
-                      columns=["Book Name", "Position", "Timestamp"])
-    df.to_csv("books_positions.csv", mode='a', index=False, header=not pd.io.common.file_exists("books_positions.csv"))
+FRAME_WINDOW = st.image([])
 
-def load_csv_data():
-    try:
-        return pd.read_csv("books_positions.csv")
-    except FileNotFoundError:
-        return pd.DataFrame(columns=["Book Name", "Position", "Timestamp"])
+camera = cv2.VideoCapture(0)
 
-# Sidebar Navigation
-page = st.sidebar.selectbox("Navigation", ["Home", "View Log", "Insert", "Delete"])
+run = st.checkbox("Start Camera")
 
-if page == "Home":
-    st.title("Library Management with OCR")
-    
-    col1, col2 = st.columns(2)
+if run:
+    st.write("Press the 'Capture & Extract' button to extract book titles.")
+    capture = st.button("📸 Capture & Extract")
 
-    with col1:
-        st.header("Camera Feed")
-        img_file_buffer = st.camera_input("Take a picture")
+    while run:
+        ret, frame = camera.read()
+        if not ret:
+            st.error("Failed to grab frame.")
+            break
 
-    with col2:
-        st.header("OCR Outputs")
-        if img_file_buffer is not None:
-            image = Image.open(img_file_buffer)
-            st.image(image, caption="Captured Image", use_column_width=True)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        FRAME_WINDOW.image(frame)
 
-            tess_text = ocr_tesseract(image)
-            easy_text = ocr_easyocr(image)
-            #google_text = ocr_googlevision(image)
+        if capture:
+            image_pil = Image.fromarray(frame)
 
-            st.subheader("1. Tesseract")
-            st.text(tess_text)
-            
-            st.subheader("2. EasyOCR")
-            st.text(easy_text)
+            st.subheader("🧠 OCR Outputs")
 
-            st.subheader("3. Google Vision")
-            st.text(google_text)
+            # Tesseract
+            tesseract_text = pytesseract.image_to_string(image_pil)
+            st.markdown("**🔤 Tesseract Output:**")
+            st.code(tesseract_text)
 
-            # Log Google Vision output into CSV
-            #log_to_csv("Detected Book", google_text)
+            # EasyOCR
+            reader = easyocr.Reader(['en'])
+            easy_text = reader.readtext(np.array(image_pil), detail=0)
+            st.markdown("**🧾 EasyOCR Output:**")
+            st.code('\n'.join(easy_text))
 
-elif page == "View Log":
-    st.title("Book Detection Log")
-    data = load_csv_data()
-    st.dataframe(data)
+            # Gemini
+            with st.spinner("Gemini is analyzing the image..."):
+                gemini_text = extract_with_gemini(image_pil)
 
-elif page == "Insert":
-    st.title("Insert Record Manually")
-    with st.form("insert_form"):
-        book_name = st.text_input("Book Name")
-        position = st.text_input("Position")
-        submitted = st.form_submit_button("Insert")
-        if submitted and book_name and position:
-            log_to_csv(book_name, position)
-            st.success("Record inserted successfully!")
+            st.markdown("**🔮 Gemini Output:**")
+            st.code(gemini_text)
 
-elif page == "Delete":
-    st.title("Delete Records")
-    data = load_csv_data()
-    if not data.empty:
-        book_names = data["Book Name"].unique()
-        book_to_delete = st.selectbox("Select Book to Delete", book_names)
-        if st.button("Delete"):
-            updated_df = data[data["Book Name"] != book_to_delete]
-            updated_df.to_csv("books_positions.csv", index=False)
-            st.success(f"Records for '{book_to_delete}' deleted.")
-    else:
-        st.info("No records to delete.")
+            # Save only Gemini output to CSV
+            try:
+                if gemini_text and gemini_text.startswith('['):
+                    book_list = eval(gemini_text)
+                    if isinstance(book_list, list):
+                        df = pd.DataFrame(book_list, columns=["Book Title"])
+                        if os.path.exists("books.csv"):
+                            df.to_csv("books.csv", mode="a", header=False, index=False)
+                        else:
+                            df.to_csv("books.csv", index=False)
+                        st.success("✅ Gemini titles added to books.csv")
+                    else:
+                        st.warning("⚠️ Gemini response not a valid list.")
+                else:
+                    st.warning("⚠️ Gemini output format is unexpected.")
+            except Exception as e:
+                st.error(f"Error saving to CSV: {str(e)}")
+
+            break
+
+else:
+    st.info("Check the box above to start the camera.")
