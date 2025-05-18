@@ -47,3 +47,24 @@ and
 Systems
 abi
 cdoon",['Signals and Systems']
+"I Third Edition
+
+Signals '
+and
+Systems :
+
+'
+
+EBook
+
+A- Anand Kumar
+","Third Edition
+Signals
+and
+Systems
+cbcoh
+A: Anand Kumar","Error: 
+  No API_KEY or ADC found. Please either:
+    - Set the `GOOGLE_API_KEY` environment variable.
+    - Manually pass the key with `genai.configure(api_key=my_api_key)`.
+    - Or set up Application Default Credentials, see https://ai.google.dev/gemini-api/docs/oauth for more information."
