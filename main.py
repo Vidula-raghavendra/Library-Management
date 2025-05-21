@@ -8,15 +8,14 @@ import easyocr
 import os
 import tempfile
 import google.generativeai as genai
-import ast # For safely evaluating string representation of list
+import ast 
+import time
 
 # ------------- PAGE CONFIG (MUST BE FIRST STREAMLIT COMMAND) -------------
-st.set_page_config(page_title="📚 Book OCR Dashboard", layout="wide")
+st.set_page_config(page_title="📚 Advanced Book OCR & Inventory", layout="wide")
 
 # ------------- APP CONFIG & INITIALIZATIONS -------------
 # --- Gemini API Configuration ---
-# IMPORTANT: REPLACE THE LINE BELOW WITH YOUR ACTUAL GEMINI API KEY
-# OR SET THE "GEMINI_API_KEY" ENVIRONMENT VARIABLE
 API_KEY_FROM_CODE = ""  # <--- REPLACE THIS!!!
 API_KEY = os.environ.get("GEMINI_API_KEY", API_KEY_FROM_CODE)
 
@@ -24,346 +23,373 @@ gemini_model = None
 gemini_initialized_successfully = False
 gemini_init_error_message = ""
 
-if API_KEY == "YOUR_ACTUAL_GEMINI_API_KEY" and API_KEY != "": # Check if it's still the placeholder
-    st.warning("⚠️ Please replace 'YOUR_ACTUAL_GEMINI_API_KEY' in the code with your real Gemini API key, or set the GEMINI_API_KEY environment variable for better security.")
+if API_KEY == "YOUR_ACTUAL_GEMINI_API_KEY" and API_KEY != "":
+    st.warning("⚠️ Please replace 'YOUR_ACTUAL_GEMINI_API_KEY' in the code with your real Gemini API key...")
     gemini_init_error_message = "Gemini API key is a placeholder."
 elif not API_KEY:
-    st.error("⛔ Gemini API Key is missing. Please set it in the code or as an environment variable (GEMINI_API_KEY). Gemini features will be disabled.")
+    st.error("⛔ Gemini API Key is missing...")
     gemini_init_error_message = "Gemini API key is missing."
 else:
     try:
         genai.configure(api_key=API_KEY)
-        gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+        gemini_model = genai.GenerativeModel("gemini-1.5-flash") 
         gemini_initialized_successfully = True
     except Exception as e:
         gemini_init_error_message = f"Failed to initialize Gemini Model: {e}"
         st.error(f"🚫 {gemini_init_error_message} Gemini features will be disabled.")
 
-
 # --- Tesseract Configuration ---
-TESSERACT_PATH_CONFIG = r"C:\Program Files\Tesseract-OCR\tesseract.exe" # Windows default
-# For other OS or custom paths, adjust or use environment variables
-# TESSERACT_PATH_CONFIG = os.environ.get("TESSERACT_CMD", TESSERACT_PATH_CONFIG)
+TESSERACT_PATH_CONFIG = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 tesseract_configured = False
 if os.path.exists(TESSERACT_PATH_CONFIG):
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH_CONFIG
     tesseract_configured = True
 else:
-    st.warning(f"⚠️ Tesseract executable not found at '{TESSERACT_PATH_CONFIG}'. Tesseract OCR may not work. Please install Tesseract and/or update the path in the script.")
+    st.warning(f"⚠️ Tesseract executable not found at '{TESSERACT_PATH_CONFIG}'.")
+
 
 # --- CSV File Configuration ---
 CSV_FILE = "books.csv"
-CSV_COLUMNS = ["Title", "Inventory_Count", "Detected_In_Current_Scan", "Estimated_Borrowed", "Scan_Order_Index"]
+CSV_COLUMNS = ["Title", "Inventory_Count", "Detected_In_Current_Scan", "Estimated_Borrowed", "Matrix_Position"]
 if not os.path.exists(CSV_FILE):
     try:
         pd.DataFrame(columns=CSV_COLUMNS).to_csv(CSV_FILE, index=False)
     except Exception as e:
         st.error(f"🚨 Could not create or access {CSV_FILE}: {e}.")
 
+if 'last_processed_image_id' not in st.session_state:
+    st.session_state.last_processed_image_id = None
+
 # ------------- OCR & HELPER FUNCTIONS -------------
 def extract_titles_with_gemini(pil_image):
-    """Extracts all book titles from the full image using Gemini and returns a list of strings."""
     if not gemini_initialized_successfully or not gemini_model:
-        # Return a list with the specific error message
-        return [gemini_init_error_message if gemini_init_error_message else "Gemini model not configured or initialization failed."]
-    
+        return [{"error": gemini_init_error_message if gemini_init_error_message else "Gemini model not configured or initialization failed."}]
     temp_path = None
     try:
+        prompt = (
+            "You are an advanced visual analysis AI specializing in library inventory.\n"
+            "Analyze the provided image which shows book spines on shelves.\n"
+            "Your task is to:\n"
+            "1. Identify each distinct book title visible on a spine.\n"
+            "2. For each identified title, determine its physical location using a matrix-style coordinate:\n"
+            "    - Row Number (row): Starting from 1 for the topmost visible shelf/row of books, incrementing downwards.\n"
+            "    - Position in Row (col): Starting from 1 for the leftmost book in that specific row, incrementing to the right.\n"
+            "3. If multiple copies of the exact same title are visible, create a separate entry for each copy with its unique coordinates.\n"
+            "4. Return your findings *only* as a Python list of dictionaries. Each dictionary *must* contain three keys: 'title' (string), 'row' (integer), and 'col' (integer for position in row).\n"
+            "   Example: `[{'title': 'The Great Gatsby', 'row': 1, 'col': 1}, {'title': 'Moby Dick', 'row': 1, 'col': 2}, {'title': 'The Great Gatsby', 'row': 2, 'col': 3}]`\n"
+            "5. If you cannot confidently determine a row or column for a title, you may use 0 for those specific integer fields, but always include the keys. Ensure 'title' is always a string.\n"
+            "6. If no book titles are clearly visible or decipherable, return an empty Python list: `[]`."
+        )
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
             pil_image.save(temp_file.name, format="PNG")
             temp_path = temp_file.name
-
-        if os.path.getsize(temp_path) == 0:
-            return ["NO_TITLES_DETECTED (empty image)"]
-
+        if os.path.getsize(temp_path) == 0: return [{"title": "NO_TITLES_DETECTED (empty image)", "row":0, "col":0}]
         uploaded_file_response = genai.upload_file(path=temp_path)
-
-        prompt = (
-            "You are an expert at reading book spines from images. "
-            "From the provided image, extract all clearly visible book titles written on the spines. "
-            "Return these titles *only* as a Python list of strings. For example: `['Title One', 'Another Book Title', 'The Third Spine']`. "
-            "If multiple copies of the exact same title are visible, list it multiple times, once for each visible copy. "
-            "If no book titles are clearly visible or decipherable, return an empty Python list `[]`."
-        )
         response = gemini_model.generate_content([prompt, uploaded_file_response])
-        
-        genai.delete_file(uploaded_file_response.name) 
-
+        genai.delete_file(uploaded_file_response.name)
         raw_text_response = response.text.strip()
-
         try:
-            if raw_text_response.startswith("```python"):
-                raw_text_response = raw_text_response.removeprefix("```python").strip()
-            elif raw_text_response.startswith("```"):
-                 raw_text_response = raw_text_response.removeprefix("```").strip()
-            
-            if raw_text_response.endswith("```"):
-                raw_text_response = raw_text_response.removesuffix("```").strip()
-
-            titles_list = ast.literal_eval(raw_text_response)
-            if isinstance(titles_list, list):
-                cleaned_titles = []
-                for title in titles_list:
-                    if isinstance(title, str) and title.strip() and title.strip().lower() not in ["no_title_detected", "unknown_title"]:
-                        cleaned_titles.append(title.strip())
-                return cleaned_titles if cleaned_titles else [] 
-            else:
-                if isinstance(raw_text_response, str) and raw_text_response and raw_text_response.lower() not in ["no_title_detected", "unknown_title", "[]", ""]:
-                     return [f"Unexpected Gemini format: {raw_text_response}"] 
-                return [] 
-        except (ValueError, SyntaxError, TypeError) as e:
-            if raw_text_response and raw_text_response.lower() not in ["no_title_detected", "unknown_title", "[]", ""]:
-                 st.info(f"Gemini did not return a list, treating response as potential title(s): '{raw_text_response}' (Error: {e})")
-                 return [line.strip() for line in raw_text_response.splitlines() if line.strip()]
-            return [f"Error parsing Gemini list: {e}. Response: {raw_text_response}"]
-
-    except Exception as e:
-        print(f"Gemini OCR Error: {str(e)}") # Log to console for debugging
-        return [f"Gemini API Error: {str(e)}"]
+            if raw_text_response.startswith("```python"): raw_text_response = raw_text_response.removeprefix("```python").strip()
+            elif raw_text_response.startswith("```"): raw_text_response = raw_text_response.removeprefix("```").strip()
+            if raw_text_response.endswith("```"): raw_text_response = raw_text_response.removesuffix("```").strip()
+            if not raw_text_response or raw_text_response.lower() == "[]": return []
+            parsed_response = ast.literal_eval(raw_text_response)
+            if isinstance(parsed_response, list):
+                valid_items = []
+                for item in parsed_response:
+                    if isinstance(item, dict) and \
+                       'title' in item and isinstance(item['title'], str) and \
+                       'row' in item and isinstance(item['row'], (int, type(None))) and \
+                       'col' in item and isinstance(item['col'], (int, type(None))):
+                        item['row'] = item['row'] if item['row'] is not None else 0
+                        item['col'] = item['col'] if item['col'] is not None else 0
+                        if item['title'].strip() and item['title'].strip().lower() not in ["no_title_detected", "unknown_title"]:
+                            valid_items.append(item)
+                return valid_items
+            else: return [{"error": f"Unexpected Gemini format. Expected list of dicts, got: {type(parsed_response)}", "response": raw_text_response}]
+        except (ValueError, SyntaxError, TypeError) as e: return [{"error": f"Error parsing Gemini's structured response: {e}", "response": raw_text_response}]
+    except Exception as e: return [{"error": f"Gemini API Error: {str(e)}"}]
     finally:
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
+        if temp_path and os.path.exists(temp_path): os.remove(temp_path)
 
 @st.cache_resource
 def get_easyocr_reader():
+    try: return easyocr.Reader(['en'], gpu=False)
+    except Exception as e: st.error(f"🚨 Failed to initialize EasyOCR Reader: {e}.")
+    return None
+
+def process_and_save_to_csv(scanned_data_for_saving):
+    if not scanned_data_for_saving:
+        st.sidebar.caption("Auto-save: No new data to save.")
+        return
+
+    current_df_csv = None
     try:
-        return easyocr.Reader(['en'], gpu=False)
-    except Exception as e:
-        st.error(f"🚨 Failed to initialize EasyOCR Reader: {e}. EasyOCR will not work.")
-        return None
-
-# ------------- STREAMLIT UI -------------
-st.title("📚 Book Spine OCR Extractor & Inventory")
-st.caption("Upload an image of book spines. OCR will be performed on the full image.")
-
-# --- File Uploader ---
-uploaded_file = st.file_uploader("📤 Upload a book spine image (JPG/PNG)", type=["jpg", "jpeg", "png"])
-
-if uploaded_file is not None:
-    pil_image = Image.open(uploaded_file)
-    st.image(pil_image, caption="Uploaded Image", use_column_width=True)
-
-    st.header("🔍 OCR Results (Full Image)")
-    cv_image_rgb = np.array(pil_image.convert('RGB'))
-    ocr_results = {"tesseract": "N/A", "easyocr": "N/A", "gemini_titles": []}
-
-    with st.spinner("Performing OCR on the image... (this may take a while)"):
-        if tesseract_configured:
-            try:
-                tess_text = pytesseract.image_to_string(pil_image)
-                ocr_results["tesseract"] = tess_text if tess_text.strip() else "No text detected by Tesseract."
-            except Exception as e:
-                ocr_results["tesseract"] = f"Tesseract Error: {e}"
+        if os.path.exists(CSV_FILE) and os.path.getsize(CSV_FILE) > 0:
+            current_df_csv = pd.read_csv(CSV_FILE)
+            if not all(col in current_df_csv.columns for col in CSV_COLUMNS) or \
+               not all(col in CSV_COLUMNS for col in current_df_csv.columns):
+                st.warning(f"{CSV_FILE} has mismatched columns. Re-initializing with schema: {CSV_COLUMNS}")
+                current_df_csv = pd.DataFrame(columns=CSV_COLUMNS)
+                current_df_csv.to_csv(CSV_FILE, index=False) 
+            else:
+                 for col in CSV_COLUMNS:
+                    if col not in current_df_csv.columns:
+                        current_df_csv[col] = 0 if col in ["Inventory_Count", "Detected_In_Current_Scan", "Estimated_Borrowed"] else ""
+                 current_df_csv = current_df_csv.reindex(columns=CSV_COLUMNS)
         else:
-            ocr_results["tesseract"] = "Tesseract not configured."
-        st.text_area("Tesseract Output", ocr_results["tesseract"], height=100)
+            current_df_csv = pd.DataFrame(columns=CSV_COLUMNS)
+            current_df_csv.to_csv(CSV_FILE, index=False)
+    except pd.errors.EmptyDataError:
+        st.info(f"{CSV_FILE} is empty. Initializing fresh inventory DataFrame.")
+        current_df_csv = pd.DataFrame(columns=CSV_COLUMNS)
+        current_df_csv.to_csv(CSV_FILE, index=False)
+    except Exception as e:
+        st.error(f"Error reading {CSV_FILE} for auto-save: {e}. Using new DataFrame.")
+        current_df_csv = pd.DataFrame(columns=CSV_COLUMNS)
+
+    df_csv_to_update = current_df_csv.copy()
+    df_csv_to_update["_found_in_scan"] = False
+    changes_made = False
+
+    for title_from_scan, data_from_scan in scanned_data_for_saving.items():
+        detected_count = data_from_scan["count"]
+        matrix_positions_str = data_from_scan["matrix_position_str"]
+        if not isinstance(title_from_scan, str): continue
+        if "Title" not in df_csv_to_update.columns: df_csv_to_update["Title"] = ""
+        df_csv_to_update["Title"] = df_csv_to_update["Title"].astype(str)
+        existing_rows = df_csv_to_update[df_csv_to_update["Title"].str.lower() == title_from_scan.lower()]
+
+        if not existing_rows.empty:
+            idx = existing_rows.index[0]
+            for col_check in ["Inventory_Count", "Detected_In_Current_Scan", "Matrix_Position"]:
+                if col_check not in df_csv_to_update.columns: df_csv_to_update[col_check] = 0 if col_check != "Matrix_Position" else ""
+            old_inventory_val = df_csv_to_update.loc[idx, "Inventory_Count"]
+            old_inventory = pd.to_numeric(old_inventory_val, errors='coerce')
+            old_inventory = 0 if pd.isna(old_inventory) else int(old_inventory)
+
+            if (df_csv_to_update.loc[idx, "Detected_In_Current_Scan"] != detected_count or
+                old_inventory < detected_count or 
+                str(df_csv_to_update.loc[idx, "Matrix_Position"]) != matrix_positions_str):
+                changes_made = True
+
+            new_inventory = max(old_inventory, detected_count)
+            df_csv_to_update.loc[idx, "Inventory_Count"] = new_inventory
+            df_csv_to_update.loc[idx, "Detected_In_Current_Scan"] = detected_count
+            df_csv_to_update.loc[idx, "Estimated_Borrowed"] = new_inventory - detected_count
+            df_csv_to_update.loc[idx, "Matrix_Position"] = matrix_positions_str
+            df_csv_to_update.loc[idx, "_found_in_scan"] = True
+        else:
+            changes_made = True
+            new_row_dict = {col: "" for col in CSV_COLUMNS}
+            new_row_dict.update({
+                "Title": title_from_scan, "Inventory_Count": detected_count,
+                "Detected_In_Current_Scan": detected_count, "Estimated_Borrowed": 0,
+                "Matrix_Position": matrix_positions_str,
+            })
+            new_row_df = pd.DataFrame([new_row_dict])
+            new_row_df["_found_in_scan"] = True
+            df_csv_to_update = pd.concat([df_csv_to_update, new_row_df], ignore_index=True)
+
+    for idx, row in df_csv_to_update.iterrows():
+        if not row["_found_in_scan"]: 
+            previously_detected_val = row.get("Detected_In_Current_Scan")
+            previously_detected_numeric = pd.to_numeric(previously_detected_val, errors='coerce')
+            if pd.isna(previously_detected_numeric): 
+                previously_detected_numeric = 0
+            else:
+                previously_detected_numeric = int(previously_detected_numeric)
+
+            if previously_detected_numeric != 0:
+                changes_made = True
+            df_csv_to_update.loc[idx, "Detected_In_Current_Scan"] = 0
+            
+            inventory_val_on_row = row.get("Inventory_Count",0)
+            inventory_val = pd.to_numeric(inventory_val_on_row, errors='coerce')
+            if pd.isna(inventory_val): 
+                inventory_val = 0
+            else:
+                inventory_val = int(inventory_val)
+            df_csv_to_update.loc[idx, "Estimated_Borrowed"] = inventory_val
+            pass 
+    
+    if "_found_in_scan" in df_csv_to_update.columns:
+        df_csv_to_update = df_csv_to_update.drop(columns=["_found_in_scan"])
+    
+    if changes_made:
+        for col in CSV_COLUMNS:
+            if col not in df_csv_to_update.columns: df_csv_to_update[col] = ""
+        df_csv_to_update = df_csv_to_update.fillna({
+            "Inventory_Count": 0, "Detected_In_Current_Scan": 0, 
+            "Estimated_Borrowed": 0, "Matrix_Position": "N/A"
+        })
+        for col_to_int in ["Inventory_Count", "Detected_In_Current_Scan", "Estimated_Borrowed"]:
+            if col_to_int in df_csv_to_update.columns:
+                 df_csv_to_update[col_to_int] = pd.to_numeric(df_csv_to_update[col_to_int], errors='coerce').fillna(0).astype(int)
+        try:
+            df_csv_to_update[CSV_COLUMNS].to_csv(CSV_FILE, index=False)
+            st.success(f"✅ Inventory auto-updated: {CSV_FILE}")
+        except Exception as e:
+            st.error(f"🚨 Error auto-saving to {CSV_FILE}: {e}")
+
+# ------------- MAIN APP LOGIC -------------
+st.title("📚 Advanced Book OCR & Inventory")
+
+input_method = st.radio("Select Image Source:", ("Upload File", "Live Webcam Capture"), horizontal=True, key="input_method_radio")
+uploaded_image_pil = None
+current_image_unique_id = None
+
+if input_method == "Upload File":
+    uploaded_file_buffer = st.file_uploader("Image of book spines", type=["jpg", "jpeg", "png"], key="file_uploader_widget")
+    if uploaded_file_buffer:
+        uploaded_image_pil = Image.open(uploaded_file_buffer)
+        current_image_unique_id = uploaded_file_buffer.file_id
+elif input_method == "Live Webcam Capture":
+    img_file_buffer_cam = st.camera_input("Capture from webcam", key="camera_input_widget")
+    if img_file_buffer_cam:
+        uploaded_image_pil = Image.open(img_file_buffer_cam)
+        current_image_unique_id = img_file_buffer_cam.file_id
+
+if uploaded_image_pil and \
+   (st.session_state.get('last_processed_image_id') != current_image_unique_id or \
+    st.session_state.get('last_processed_image_id') is None):
+
+    if current_image_unique_id: st.session_state.last_processed_image_id = current_image_unique_id
+    else: st.session_state.last_processed_image_id = f"processed_at_{time.time()}" 
+    st.image(uploaded_image_pil, caption="Current Image for Processing", use_column_width=True)
+    st.header("🔍 OCR Results (Full Image)")
+    cv_image_rgb = np.array(uploaded_image_pil.convert('RGB'))
+    tesseract_full_text = "N/A"
+    easyocr_full_text = "N/A"
+    gemini_extracted_data = [] 
+
+    with st.spinner("Performing OCR... (this may take a while)"):
+        if tesseract_configured:
+            try: 
+                tesseract_full_text = pytesseract.image_to_string(uploaded_image_pil)
+                if not tesseract_full_text.strip(): tesseract_full_text = "No text detected by Tesseract."
+            except Exception as e: tesseract_full_text = f"Tesseract Error: {e}"
+        else: tesseract_full_text = "Tesseract not configured."
+        st.text_area("Tesseract Output (Full Image)", tesseract_full_text, height=100, key="tess_out_full")
 
         easyocr_reader = get_easyocr_reader()
         if easyocr_reader:
             try:
                 easy_text_list = easyocr_reader.readtext(cv_image_rgb, detail=0, paragraph=True)
-                easy_text = '\n'.join(easy_text_list)
-                ocr_results["easyocr"] = easy_text if easy_text.strip() else "No text detected by EasyOCR."
-            except Exception as e:
-                ocr_results["easyocr"] = f"EasyOCR Error: {e}"
-        else:
-            ocr_results["easyocr"] = "EasyOCR not initialized."
-        st.text_area("EasyOCR Output", ocr_results["easyocr"], height=100)
+                easyocr_full_text = '\n'.join(easy_text_list)
+                if not easyocr_full_text.strip(): easyocr_full_text = "No text detected by EasyOCR."
+            except Exception as e: easyocr_full_text = f"EasyOCR Error: {e}"
+        else: easyocr_full_text = "EasyOCR not initialized."
+        st.text_area("EasyOCR Output (Full Image)", easyocr_full_text, height=100, key="easy_out_full")
         
         if gemini_initialized_successfully and gemini_model:
-            gemini_titles_list = extract_titles_with_gemini(pil_image)
-            ocr_results["gemini_titles"] = gemini_titles_list
-            if gemini_titles_list:
-                st.subheader("💎 Gemini Extracted Titles:")
-                # Filter out known error messages before displaying
-                displayable_gemini_titles = [
-                    t for t in gemini_titles_list 
-                    if not any(t.startswith(err_prefix) for err_prefix in ["Gemini API Error:", "Error parsing Gemini list:", "Unexpected Gemini format:"]) and \
-                       t not in ["NO_TITLES_DETECTED (empty image)", gemini_init_error_message, "Gemini model not configured or initialization failed."]]
-                
-                if displayable_gemini_titles:
-                    for i, title in enumerate(displayable_gemini_titles):
-                        st.markdown(f"- {title}")
-                elif any(err in str(gemini_titles_list) for err in ["Gemini API Error:", "Error parsing Gemini list:", "Unexpected Gemini format:", gemini_init_error_message]):
-                     st.warning(f"Gemini returned an error or unexpected format: {gemini_titles_list}")
+            gemini_extracted_data = extract_titles_with_gemini(pil_image=uploaded_image_pil)
+            st.subheader("💎 Gemini Extracted Titles & Positions:")
+            if gemini_extracted_data:
+                is_error_response = len(gemini_extracted_data) == 1 and isinstance(gemini_extracted_data[0], dict) and "error" in gemini_extracted_data[0]
+                if is_error_response:
+                    st.warning(f"Gemini processing error: {gemini_extracted_data[0].get('error')}")
+                    if "response" in gemini_extracted_data[0]: st.code(f"Raw Gemini Response:\n{gemini_extracted_data[0]['response']}")
                 else:
-                     st.info("Gemini processed the image but did not detect any distinct book titles or returned an empty list.")
-            else: # Empty list returned from extract_titles_with_gemini
-                st.info("Gemini processed the image but did not detect any distinct book titles or returned an empty list.")
+                    has_valid_entries = False
+                    for item in gemini_extracted_data:
+                        if isinstance(item, dict) and item.get("title"):
+                            title = item.get('title', "N/A")
+                            row = item.get('row', 0)
+                            col = item.get('col', 0)
+                            st.markdown(f"- **{title}** at A[{row}x{col}]")
+                            has_valid_entries = True
+                    if not has_valid_entries and not is_error_response:
+                        st.info("Gemini processed image but found no valid titles/positions.")
+            else: st.info("Gemini processed image but found no titles/positions or returned an empty list.")
+        elif gemini_init_error_message: st.warning(f"Gemini not configured: {gemini_init_error_message}.")
+        else: st.warning("Gemini status unknown.")
 
-        elif gemini_init_error_message: # If Gemini failed to initialize earlier
-             st.warning(f"Gemini not configured: {gemini_init_error_message}. Cannot extract titles with Gemini.")
-             ocr_results["gemini_titles"] = [gemini_init_error_message] # Store error for processing logic
-        else: # Should not happen if logic is correct, but as a fallback
-             st.warning("Gemini status unknown. Cannot extract titles with Gemini.")
-             ocr_results["gemini_titles"] = ["Gemini status unknown"]
-
-
-    # --- Prepare Data for CSV based on Gemini's output ---
     scanned_titles_data_for_csv = {}
-    gemini_output_titles = ocr_results.get("gemini_titles", [])
-    
-    # Define a list of known error messages or prefixes to filter out
-    known_error_indicators = [
-        "Gemini API Error:", 
-        "Error parsing Gemini list:",
-        "Gemini model not configured or initialization failed.",
-        "Gemini API key is a placeholder.",
-        "Gemini API key is missing.",
-        "Failed to initialize Gemini Model", # Prefix
-        "Unexpected Gemini format:",
-        "NO_TITLES_DETECTED (empty image)",
-        "Gemini status unknown"
-    ]
-    if gemini_init_error_message and gemini_init_error_message not in known_error_indicators: # Add specific init error if not generic
-        known_error_indicators.append(gemini_init_error_message)
+    valid_gemini_items = [item for item in gemini_extracted_data if isinstance(item, dict) and "error" not in item and "title" in item]
 
-
-    valid_gemini_titles = []
-    for t in gemini_output_titles:
-        is_error = False
-        for indicator in known_error_indicators:
-            if indicator in t: # Use 'in' for prefixes or full matches
-                is_error = True
-                break
-        if not is_error and t.strip(): # Also ensure it's not just whitespace
-            valid_gemini_titles.append(t)
-
-
-    if valid_gemini_titles:
-        for idx, title_from_scan in enumerate(valid_gemini_titles):
-            clean_title = ' '.join(word.capitalize() for word in title_from_scan.split())
+    if valid_gemini_items:
+        for item in valid_gemini_items:
+            title = item.get("title", "Unknown Title").strip()
+            row = item.get("row", 0) 
+            col = item.get("col", 0) 
+            if not title or title.lower() == "unknown title" or not isinstance(row, int) or not isinstance(col, int) or row <= 0 or col <= 0:
+                continue
+            clean_title = ' '.join(word.capitalize() for word in title.split())
             if clean_title not in scanned_titles_data_for_csv:
-                scanned_titles_data_for_csv[clean_title] = {"count": 0, "indices": []}
+                scanned_titles_data_for_csv[clean_title] = {"count": 0, "positions_by_row": {}}
             scanned_titles_data_for_csv[clean_title]["count"] += 1
-            scanned_titles_data_for_csv[clean_title]["indices"].append(idx + 1)
+            if row not in scanned_titles_data_for_csv[clean_title]["positions_by_row"]:
+                scanned_titles_data_for_csv[clean_title]["positions_by_row"][row] = []
+            scanned_titles_data_for_csv[clean_title]["positions_by_row"][row].append(col)
 
-        st.subheader("📊 Aggregated Gemini Titles for Inventory")
+        st.subheader("📊 Aggregated Gemini Data for Inventory")
         display_scan_data = []
         for title, data in scanned_titles_data_for_csv.items():
+            position_strings = []
+            for row_num, cols in sorted(data["positions_by_row"].items()):
+                sorted_cols = sorted(list(set(cols))) 
+                if sorted_cols: 
+                    position_strings.append(f"A[{row_num},({','.join(map(str, sorted_cols))})]")
+            final_position_str = "; ".join(position_strings) if position_strings else "Position N/A"
             display_scan_data.append({
-                "Title": title, 
-                "Detected Count": data["count"], 
-                "Scan Order Indices": ", ".join(map(str, data["indices"]))
+                "Title": title, "Detected Count": data["count"], "Matrix Positions": final_position_str 
             })
-        if display_scan_data:
-            st.dataframe(pd.DataFrame(display_scan_data), use_container_width=True, hide_index=True)
-        # No "else" here, as the message for no valid titles is handled by the next block
+        if display_scan_data: 
+            st.dataframe(pd.DataFrame(display_scan_data), use_container_width=True, hide_index=True, key="agg_titles_df_matrix")
+        
+        data_for_saving = {}
+        for title, data in scanned_titles_data_for_csv.items():
+            position_strings = []
+            for row_num, cols in sorted(data["positions_by_row"].items()):
+                sorted_cols = sorted(list(set(cols)))
+                if sorted_cols: position_strings.append(f"A[{row_num},({','.join(map(str, sorted_cols))})]")
+            final_position_str = "; ".join(position_strings) if position_strings else "Position N/A"
+            data_for_saving[title] = {"count": data["count"], "matrix_position_str": final_position_str}
+        process_and_save_to_csv(data_for_saving)
     
-    # This message will show if valid_gemini_titles is empty
-    if not valid_gemini_titles and uploaded_file: # Only show if a file was uploaded
-        if any(err_indicator in str(gemini_output_titles) for err_indicator in known_error_indicators):
-             st.warning("Could not process titles for inventory due to Gemini configuration issues or errors during extraction.")
-        else:
-             st.info("No valid book titles were extracted by Gemini to process for inventory.")
+    elif uploaded_image_pil:
+        is_error_response_check = len(gemini_extracted_data) == 1 and isinstance(gemini_extracted_data[0], dict) and "error" in gemini_extracted_data[0]
+        if is_error_response_check: pass
+        elif not gemini_extracted_data: st.info("No processable book data (titles/positions) extracted by Gemini from the current image.")
+        else: st.warning("Could not process titles for inventory due to Gemini issues or an unexpected response format.")
 
-
-    # --- Save to CSV Button & Logic ---
-    # Disable button if there are no valid titles to save
-    disable_save_button = not bool(scanned_titles_data_for_csv) 
-    if st.button("💾 Process and Save Gemini Titles to CSV", type="primary", disabled=disable_save_button):
-        try:
-            if os.path.exists(CSV_FILE) and os.path.getsize(CSV_FILE) > 0:
-                df_csv = pd.read_csv(CSV_FILE)
-                for col in CSV_COLUMNS:
-                    if col not in df_csv.columns: # Add missing columns with default values
-                        df_csv[col] = 0 if col in ["Inventory_Count", "Detected_In_Current_Scan", "Estimated_Borrowed"] else ""
-                df_csv = df_csv.reindex(columns=CSV_COLUMNS) # Ensure correct order and fill missing from reindex
-            else:
-                df_csv = pd.DataFrame(columns=CSV_COLUMNS)
-        except Exception as e:
-            st.error(f"Error reading {CSV_FILE}: {e}")
-            df_csv = pd.DataFrame(columns=CSV_COLUMNS) 
-
-        df_csv["_found_in_scan"] = False 
-
-        for title_from_scan, data_from_scan in scanned_titles_data_for_csv.items():
-            detected_count = data_from_scan["count"]
-            scan_indices_str = ", ".join(map(str,sorted(data_from_scan["indices"])))
-            existing_rows = df_csv[df_csv["Title"].str.lower() == title_from_scan.lower()]
-
-            if not existing_rows.empty:
-                idx = existing_rows.index[0]
-                
-                old_inventory_val = df_csv.loc[idx, "Inventory_Count"]
-                old_inventory = pd.to_numeric(old_inventory_val, errors='coerce')
-                if pd.isna(old_inventory): 
-                    old_inventory = 0
-                else:
-                    old_inventory = int(old_inventory)
-
-                new_inventory = max(old_inventory, detected_count)
-                df_csv.loc[idx, "Inventory_Count"] = new_inventory
-                df_csv.loc[idx, "Detected_In_Current_Scan"] = detected_count
-                df_csv.loc[idx, "Estimated_Borrowed"] = new_inventory - detected_count
-                df_csv.loc[idx, "Scan_Order_Index"] = scan_indices_str
-                df_csv.loc[idx, "_found_in_scan"] = True
-            else:
-                new_row_dict = {col: "" for col in CSV_COLUMNS} # Initialize with defaults
-                new_row_dict.update({
-                    "Title": title_from_scan,
-                    "Inventory_Count": detected_count,
-                    "Detected_In_Current_Scan": detected_count,
-                    "Estimated_Borrowed": 0,
-                    "Scan_Order_Index": scan_indices_str,
-                })
-                new_row_dict["_found_in_scan"] = True # Add temp column
-                
-                new_row_df = pd.DataFrame([new_row_dict])
-                df_csv = pd.concat([df_csv, new_row_df], ignore_index=True)
-
-
-        for idx, row in df_csv.iterrows():
-            if not row["_found_in_scan"]:
-                df_csv.loc[idx, "Detected_In_Current_Scan"] = 0
-                
-                inventory_val_on_row = df_csv.loc[idx, "Inventory_Count"]
-                inventory_val = pd.to_numeric(inventory_val_on_row, errors='coerce')
-                if pd.isna(inventory_val):
-                    inventory_val = 0
-                else:
-                    inventory_val = int(inventory_val)
-                
-                df_csv.loc[idx, "Estimated_Borrowed"] = inventory_val
-                df_csv.loc[idx, "Scan_Order_Index"] = "Not seen in this scan"
-        
-        if "_found_in_scan" in df_csv.columns:
-            df_csv = df_csv.drop(columns=["_found_in_scan"])
-        
-        df_csv = df_csv.fillna({
-            "Inventory_Count": 0, 
-            "Detected_In_Current_Scan": 0, 
-            "Estimated_Borrowed": 0, 
-            "Scan_Order_Index": ""
-        })
-        for col_to_int in ["Inventory_Count", "Detected_In_Current_Scan", "Estimated_Borrowed"]:
-            if col_to_int in df_csv.columns:
-                 df_csv[col_to_int] = pd.to_numeric(df_csv[col_to_int], errors='coerce').fillna(0).astype(int)
-
-        try:
-            df_csv.to_csv(CSV_FILE, index=False)
-            st.success(f"✅ Book data processed and saved to {CSV_FILE}!")
-            st.rerun() 
-        except Exception as e:
-            st.error(f"🚨 Error saving to {CSV_FILE}: {e}")
-
-# ------------- Display Table -------------
 st.divider()
-st.subheader("📘 Saved Book Titles Inventory")
+st.header("📘 Book Inventory")
+df_inventory = pd.DataFrame(columns=CSV_COLUMNS)
 if os.path.exists(CSV_FILE):
     try:
-        df_display = pd.read_csv(CSV_FILE)
-        if not df_display.empty:
-            for col in CSV_COLUMNS: # Ensure all columns for display
-                if col not in df_display.columns:
-                    df_display[col] = "" 
-            df_display = df_display[CSV_COLUMNS] 
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
-        else:
-            st.info(f"{CSV_FILE} is empty. Upload an image and save results.")
-    except pd.errors.EmptyDataError:
-        st.info(f"{CSV_FILE} is empty or cannot be read properly.")
-    except Exception as e:
-        st.error(f"Error loading CSV for display: {e}")
-else:
-    st.info(f"{CSV_FILE} not found. Upload an image and save results to create it.")
+        df_inventory = pd.read_csv(CSV_FILE)
+        if df_inventory.empty and os.path.getsize(CSV_FILE) == 0: 
+            st.info(f"{CSV_FILE} is empty. Upload an image to populate.", icon="ℹ️")
+        elif df_inventory.empty and os.path.getsize(CSV_FILE) > 0: 
+             st.warning(f"{CSV_FILE} might be corrupted or only contains headers. Try deleting it if issues persist.", icon="⚠️")
+             df_inventory = pd.DataFrame(columns=CSV_COLUMNS)
+        else: 
+            for col_csv in CSV_COLUMNS:
+                if col_csv not in df_inventory.columns: df_inventory[col_csv] = ""
+            df_inventory = df_inventory[CSV_COLUMNS]
+    except pd.errors.EmptyDataError: 
+        st.info(f"{CSV_FILE} is empty or could not be parsed by pandas. Will be created/overwritten on next save.", icon="ℹ️")
+        df_inventory = pd.DataFrame(columns=CSV_COLUMNS)
+    except Exception as e: 
+        st.error(f"Error loading inventory from {CSV_FILE}: {e}", icon="🚨")
+        df_inventory = pd.DataFrame(columns=CSV_COLUMNS)
+
+search_query = st.text_input("Search for a book title in the inventory:", key="inventory_search_input")
+if not df_inventory.empty:
+    if search_query:
+        mask = df_inventory["Title"].astype(str).str.contains(search_query, case=False, na=False)
+        df_to_display = df_inventory[mask]
+        if df_to_display.empty: st.caption(f"No books found matching '{search_query}'.")
+        else: st.caption(f"Found {len(df_to_display)} match(es) for '{search_query}':")
+    else:
+        df_to_display = df_inventory
+    st.dataframe(df_to_display, use_container_width=True, hide_index=True, key="inventory_df")
+elif search_query:
+    st.caption("Inventory is empty. Cannot search.")
+else: 
+    if os.path.exists(CSV_FILE) and os.path.getsize(CSV_FILE) == 0 : 
+        pass 
+    elif not os.path.exists(CSV_FILE):
+        st.info(f"{CSV_FILE} does not exist. It will be created on the first successful scan.", icon="ℹ️")
