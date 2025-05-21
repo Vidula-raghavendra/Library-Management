@@ -1,84 +1,10 @@
-Tesseract,EasyOCR,Gemini,Borrowed
-,"Kbeppb
-1
-IE;462 241
-IH
-TF
-M
-Em
-Ei
-#nw
-1
-|
-2
-[","```python
-[
-'Louden COMPLER CONSTICTH3',
-'Louden COMPILER CONSTRUCT',
-'The Intel Microprocessors',
-'The Intel Microprocessors',
-'The Intel Microprocessors',
-'PEARSON Intel Microprocessors',
-'The x86 Microprocesso',
-'Intel Microprocessors',
-'Microprocessors',
-'MICROPROCESSORS AND INTERFACING',
-'The Best 8086',
-'Microprocessors',
-'Microprocesso',
-'MICROPROCESSORS AND INTERFACING',
-'Microprocessor',
-'MICROPROCESSORS AND INTERFACING',
-'The Microprocessors',
-'8088 and 8086',
-'MICROPROCESSORS',
-'MICROPROCESSORS AND INTERFACING',
-'MICROCONTROLLERS',
-'Microprocessors',
-'MICROPROCESSORS',
-'MICROPROCESSORS AND INTERFACING',
-'MICROCONTROLLERS',
-'MICROPROCESSORS AND INTERFACING',
-'MICROPROCESSORS AND INTERFACING',
-'The 8088 and 8086',
-'MICROPROCESSORS',
-'MICROCONTROLLERS',
-'MICROPROCESSORS AND INTERFACING',
-'The 8088 and 8086',
-'MICROPROCESSORS AND INTERFACING',
-'Microprocessors',
-'MICROPROCESSORS AND INTERFACING',
-'MICROPROCESSORS AND INTERFACING',
-'Effective Methods for',
-'Software Testing',
-'Effective Methods',
-'MICROPROCESSORS AND INTERFACING',
-'Software Testing',
-'MICROPROCESSORS AND INTERFACING',
-'Microprocessors and Interfacing',
-'Effective Methods for',
-'Software Terti',
-'MICRO'
-]
-```",No
-,"#
-%
-Ghosh
-Ghosh
-E
-E
-M
-[
-IF
-8
-38
-7
-Ghosh
-Ghosh
-[
-1
-8
-8
-8
-8","['Indian Government and Politics', 'Indian Government and Politics', 'Indian Government and Politics', 'Indian Government and Politics']",No
-"['Indian Government and Politics', 'Indian Government and Politics']",No
+Title,Inventory_Count,Detected_In_Current_Scan,Estimated_Borrowed,Scan_Order_Index
+Indian Government And Politics,4,0,4,Not seen in this scan
+Louden Compiler Construction,2,2,0,"1, 2"
+The Intel Microprocessors,3,3,0,"3, 4, 5"
+Intel Microprocessors,3,3,0,"6, 8, 9"
+The X86 Microprocessor,1,1,0,7
+The 8088 And 8086 Microprocessors,6,6,0,"10, 26, 27, 28, 29, 30"
+Microprocessors,4,4,0,"11, 31, 32, 33"
+Microprocessors And Interfacing,15,15,0,"12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 34"
+Effective Methods For Software Testing,2,2,0,"35, 36"
