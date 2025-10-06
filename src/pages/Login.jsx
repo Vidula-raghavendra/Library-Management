@@ -198,7 +198,7 @@ const styles = {
   toggleBtn: {
     background: 'none',
     border: 'none',
-    color: '#667eea',
+    color: '#3b82f6',
     cursor: 'pointer',
     fontSize: '16px',
     fontWeight: '600',
@@ -214,6 +214,6 @@ const styles = {
   demoTitle: {
     fontWeight: '700',
     marginBottom: '8px',
-    color: '#667eea',
+    color: '#3b82f6',
   },
 };

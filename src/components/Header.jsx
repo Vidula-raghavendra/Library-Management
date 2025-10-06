@@ -64,7 +64,7 @@ const styles = {
   logo: {
     fontSize: '24px',
     fontWeight: '700',
-    color: '#667eea',
+    color: '#3b82f6',
     textDecoration: 'none',
     display: 'flex',
     alignItems: 'center',
@@ -94,7 +94,7 @@ const styles = {
   },
   userName: {
     fontWeight: '600',
-    color: '#667eea',
+    color: '#3b82f6',
   },
   logoutBtn: {
     padding: '8px 16px',
